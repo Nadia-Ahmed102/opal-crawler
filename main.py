@@ -1,9 +1,7 @@
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from urllib.parse import urlparse, urldefrag
 from playwright.sync_api import sync_playwright
-from openpyxl import Workbook
 
 app = FastAPI()
 
@@ -48,11 +46,6 @@ def crawl(request: CrawlRequest):
     queue = [start_url]
     results = []
 
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "Internal Pages"
-    sheet.append(["URL", "Page Title"])
-
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -83,8 +76,6 @@ def crawl(request: CrawlRequest):
                     "page_title": title
                 })
 
-                sheet.append([current_url, title])
-
                 links = page.locator("a[href]").evaluate_all(
                     "elements => elements.map(a => a.href)"
                 )
@@ -103,23 +94,10 @@ def crawl(request: CrawlRequest):
         page.close()
         browser.close()
 
-    workbook.save("crawl_results.xlsx")
-
     return {
         "total_pages": len(results),
-        "excel_file": "crawl_results.xlsx",
-        "download_url": "/download",
         "pages": results
     }
-
-
-@app.get("/download")
-def download_excel():
-    return FileResponse(
-        "crawl_results.xlsx",
-        filename="crawl_results.xlsx",
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
 
 
 @app.get("/discovery")
