@@ -27,7 +27,7 @@ def normalize_url(url: str) -> str:
 def should_ignore(url: str) -> bool:
     lower = url.lower()
 
-    if lower.startswith(("mailto:", "tel:", "javascript:")):
+    if lower.startswith(("mailto:", "tel:", "javascript:", "#")):
         return True
 
     if any(lower.endswith(ext) for ext in IGNORE_EXTENSIONS):
@@ -54,7 +54,12 @@ def crawl(request: CrawlRequest):
     sheet.append(["URL", "Page Title"])
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
+
+        page = browser.new_page()
 
         while queue:
             current_url = normalize_url(queue.pop(0))
@@ -63,10 +68,14 @@ def crawl(request: CrawlRequest):
                 continue
 
             visited.add(current_url)
-            page = browser.new_page()
 
             try:
-                page.goto(current_url, wait_until="domcontentloaded", timeout=30000)
+                page.goto(
+                    current_url,
+                    wait_until="domcontentloaded",
+                    timeout=30000
+                )
+
                 title = page.title()
 
                 results.append({
@@ -89,18 +98,17 @@ def crawl(request: CrawlRequest):
                             queue.append(link)
 
             except Exception:
-                pass
+                continue
 
-            finally:
-                page.close()
-
+        page.close()
         browser.close()
 
     workbook.save("crawl_results.xlsx")
 
     return {
         "total_pages": len(results),
-        "excel_file": "/download",
+        "excel_file": "crawl_results.xlsx",
+        "download_url": "/download",
         "pages": results
     }
 
