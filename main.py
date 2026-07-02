@@ -1,7 +1,9 @@
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from urllib.parse import urlparse, urldefrag
 from playwright.sync_api import sync_playwright
+from openpyxl import Workbook
 
 app = FastAPI()
 
@@ -46,44 +48,33 @@ def crawl(request: CrawlRequest):
     queue = [start_url]
     results = []
 
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Internal Pages"
+    sheet.append(["URL", "Page Title"])
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
 
         while queue:
-            current_url = queue.pop(0)
-            current_url = normalize_url(current_url)
+            current_url = normalize_url(queue.pop(0))
 
-            if current_url in visited:
-                continue
-
-            if should_ignore(current_url):
+            if current_url in visited or should_ignore(current_url):
                 continue
 
             visited.add(current_url)
-
             page = browser.new_page()
 
             try:
-                response = page.goto(
-                    current_url,
-                    wait_until="domcontentloaded",
-                    timeout=30000
-                )
-
-                status_code = response.status if response else None
+                page.goto(current_url, wait_until="domcontentloaded", timeout=30000)
                 title = page.title()
-
-                try:
-                    h1 = page.locator("h1").first.inner_text(timeout=3000)
-                except Exception:
-                    h1 = ""
 
                 results.append({
                     "url": current_url,
-                    "page_title": title,
-                    "status_code": status_code,
-                    "h1": h1
+                    "page_title": title
                 })
+
+                sheet.append([current_url, title])
 
                 links = page.locator("a[href]").evaluate_all(
                     "elements => elements.map(a => a.href)"
@@ -93,50 +84,53 @@ def crawl(request: CrawlRequest):
                     link = normalize_url(link)
                     parsed = urlparse(link)
 
-                    if should_ignore(link):
-                        continue
-
-                    if parsed.netloc == domain:
+                    if parsed.netloc == domain and not should_ignore(link):
                         if link not in visited and link not in queue:
                             queue.append(link)
 
-            except Exception as e:
-                results.append({
-                    "url": current_url,
-                    "page_title": "",
-                    "status_code": "ERROR",
-                    "h1": "",
-                    "error": str(e)
-                })
+            except Exception:
+                pass
 
             finally:
                 page.close()
 
         browser.close()
 
+    workbook.save("crawl_results.xlsx")
+
     return {
         "total_pages": len(results),
+        "excel_file": "/download",
         "pages": results
     }
+
+
+@app.get("/download")
+def download_excel():
+    return FileResponse(
+        "crawl_results.xlsx",
+        filename="crawl_results.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 
 @app.get("/discovery")
 def discovery():
     return {
-        "tools": [
+        "functions": [
             {
                 "name": "crawl_site",
                 "description": "Crawls a website like Screaming Frog and returns internal page URLs with page titles.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "site_url": {
-                            "type": "string",
-                            "description": "The website URL to crawl."
-                        }
-                    },
-                    "required": ["site_url"]
-                }
+                "parameters": [
+                    {
+                        "name": "site_url",
+                        "type": "string",
+                        "description": "The website URL to crawl.",
+                        "required": True
+                    }
+                ],
+                "endpoint": "/crawl",
+                "http_method": "POST"
             }
         ]
     }
