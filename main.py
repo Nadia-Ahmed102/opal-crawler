@@ -1,7 +1,8 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from urllib.parse import urlparse, urldefrag
-from playwright.sync_api import sync_playwright
+from urllib.parse import urlparse, urljoin, urldefrag
+from bs4 import BeautifulSoup
+import requests
 
 app = FastAPI()
 
@@ -46,53 +47,53 @@ def crawl(request: CrawlRequest):
     queue = [start_url]
     results = []
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"]
-        )
+    headers = {
+        "User-Agent": "Mozilla/5.0 OpalCrawler/1.0"
+    }
 
-        page = browser.new_page()
+    while queue:
+        current_url = normalize_url(queue.pop(0))
 
-        while queue:
-            current_url = normalize_url(queue.pop(0))
+        if current_url in visited or should_ignore(current_url):
+            continue
 
-            if current_url in visited or should_ignore(current_url):
+        visited.add(current_url)
+
+        try:
+            response = requests.get(
+                current_url,
+                headers=headers,
+                timeout=15,
+                allow_redirects=True
+            )
+
+            content_type = response.headers.get("content-type", "")
+
+            if "text/html" not in content_type:
                 continue
 
-            visited.add(current_url)
+            soup = BeautifulSoup(response.text, "html.parser")
 
-            try:
-                page.goto(
-                    current_url,
-                    wait_until="domcontentloaded",
-                    timeout=30000
-                )
+            title_tag = soup.find("title")
+            title = title_tag.get_text(strip=True) if title_tag else ""
 
-                title = page.title()
+            results.append({
+                "url": current_url,
+                "page_title": title
+            })
 
-                results.append({
-                    "url": current_url,
-                    "page_title": title
-                })
+            for a in soup.find_all("a", href=True):
+                link = urljoin(current_url, a["href"])
+                link = normalize_url(link)
 
-                links = page.locator("a[href]").evaluate_all(
-                    "elements => elements.map(a => a.href)"
-                )
+                parsed = urlparse(link)
 
-                for link in links:
-                    link = normalize_url(link)
-                    parsed = urlparse(link)
+                if parsed.netloc == domain and not should_ignore(link):
+                    if link not in visited and link not in queue:
+                        queue.append(link)
 
-                    if parsed.netloc == domain and not should_ignore(link):
-                        if link not in visited and link not in queue:
-                            queue.append(link)
-
-            except Exception:
-                continue
-
-        page.close()
-        browser.close()
+        except Exception:
+            continue
 
     return {
         "total_pages": len(results),
@@ -106,7 +107,7 @@ def discovery():
         "functions": [
             {
                 "name": "crawl_site",
-                "description": "Crawls a website like Screaming Frog and returns internal page URLs with page titles.",
+                "description": "Crawls a website and returns internal page URLs with page titles.",
                 "parameters": [
                     {
                         "name": "site_url",
