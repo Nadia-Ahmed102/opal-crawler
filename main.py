@@ -2,13 +2,16 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from urllib.parse import urlparse, urljoin, urldefrag
 from bs4 import BeautifulSoup
+from typing import Optional, Dict, Any
 import requests
 
 app = FastAPI()
 
 
 class CrawlRequest(BaseModel):
-    site_url: str
+    site_url: Optional[str] = None
+    parameters: Optional[Dict[str, Any]] = None
+    environment: Optional[Dict[str, Any]] = None
 
 
 IGNORE_EXTENSIONS = (
@@ -38,9 +41,30 @@ def should_ignore(url: str) -> bool:
     return False
 
 
+def get_site_url(request: CrawlRequest) -> Optional[str]:
+    if request.site_url:
+        return request.site_url
+
+    if request.parameters and request.parameters.get("site_url"):
+        return request.parameters.get("site_url")
+
+    return None
+
+
 @app.post("/crawl")
 def crawl(request: CrawlRequest):
-    start_url = normalize_url(request.site_url)
+    site_url = get_site_url(request)
+
+    if not site_url:
+        return {
+            "error": "Missing site_url",
+            "expected_formats": [
+                {"site_url": "https://www.example.com"},
+                {"parameters": {"site_url": "https://www.example.com"}}
+            ]
+        }
+
+    start_url = normalize_url(site_url)
     domain = urlparse(start_url).netloc
 
     visited = set()
@@ -85,7 +109,6 @@ def crawl(request: CrawlRequest):
             for a in soup.find_all("a", href=True):
                 link = urljoin(current_url, a["href"])
                 link = normalize_url(link)
-
                 parsed = urlparse(link)
 
                 if parsed.netloc == domain and not should_ignore(link):
@@ -96,6 +119,7 @@ def crawl(request: CrawlRequest):
             continue
 
     return {
+        "site_url": site_url,
         "total_pages": len(results),
         "pages": results
     }
